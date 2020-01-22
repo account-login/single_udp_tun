@@ -5,6 +5,7 @@ import (
 	"github.com/account-login/single_udp_tun"
 	"github.com/pkg/errors"
 	"log"
+	"math/rand"
 	"net"
 	"sync/atomic"
 	"unsafe"
@@ -16,6 +17,30 @@ type Client struct {
 	Obfuscator single_udp_tun.Obfuscator
 }
 
+func getRandomUDPConn() (net.PacketConn, error) {
+	var conns []net.PacketConn
+	defer func() {
+		for _, conn := range conns {
+			if conn != nil {
+				conn.Close()
+			}
+		}
+	}()
+
+	for i := 0; i < 128; i++ {
+		conn, err := net.ListenPacket("udp", ":0")
+		if err != nil {
+			return nil, errors.Wrap(err, "listen for server")
+		}
+		conns = append(conns, conn)
+	}
+
+	idx := rand.Intn(len(conns))
+	conn := conns[idx]
+	conns[idx] = nil
+	return conn, nil
+}
+
 func (c *Client) Run() error {
 	// local
 	lconn, err := net.ListenPacket("udp", c.Local)
@@ -25,7 +50,7 @@ func (c *Client) Run() error {
 	defer lconn.Close()
 
 	// server
-	sconn, err := net.ListenPacket("udp", ":0")
+	sconn, err := getRandomUDPConn()
 	if err != nil {
 		return errors.Wrap(err, "listen for server")
 	}
