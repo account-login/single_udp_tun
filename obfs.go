@@ -5,17 +5,12 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math/rand"
-	"net"
 	"time"
 )
 
 type Obfuscator interface {
 	Encode([]byte) []byte
 	Decode([]byte) ([]byte, error)
-}
-
-func UDPAddrEqual(lhs, rhs *net.UDPAddr) bool {
-	return lhs.IP.Equal(rhs.IP) && lhs.Zone == rhs.Zone && lhs.Port == rhs.Port
 }
 
 type NilObfs struct{}
