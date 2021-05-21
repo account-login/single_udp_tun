@@ -56,12 +56,10 @@ func main() {
 	signal.Notify(sigc, os.Interrupt)
 	<-sigc
 
-	defer func() {
-		got := 0
-		for _, m := range bitmap {
-			got += bits.OnesCount64(m)
-		}
-		fmt.Println("loss:", float64(num-got)/float64(num))
-		fmt.Println("dup:", dup)
-	}()
+	got := 0
+	for _, m := range bitmap {
+		got += bits.OnesCount64(m)
+	}
+	fmt.Println("loss:", float64(num-got)/float64(num))
+	fmt.Println("dup:", dup)
 }

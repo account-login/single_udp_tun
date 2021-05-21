@@ -16,35 +16,6 @@ func assert(cond bool) {
 	}
 }
 
-//func getFD(conn *net.UDPConn) syscall.Handle {
-//	if runtime.GOOS == "windows" {
-//		/*
-//		type conn struct {
-//			fd *netFD
-//		}
-//		type fdMutex struct {
-//			state uint64
-//			rsema uint32
-//			wsema uint32
-//		}
-//		type FD struct {
-//			// Lock sysfd and serialize access to Read and Write methods.
-//			fdmu fdMutex
-//
-//			// System file descriptor. Immutable until Close.
-//			Sysfd syscall.Handle
-//			...
-//		*/
-//
-//		p := *(*uintptr)(unsafe.Pointer(conn)) // fd *netFD
-//		return *(*syscall.Handle)(unsafe.Pointer(p + 16))
-//	} else {
-//		fp, err := conn.File()
-//		assert(err == nil)
-//		return syscall.Handle(fp.Fd())
-//	}
-//}
-
 func main() {
 	pSize := flag.Int("size", 0, "packet size")
 	pPPS := flag.Int("pps", 0, "packet per second")
@@ -74,15 +45,6 @@ func main() {
 
 	conn, err := net.Dial("udp", *pServer)
 	assert(err == nil)
-
-	//{
-	//	fd := getFD(conn.(*net.UDPConn))
-	//	fmt.Println("fd:", fd)
-	//	var buf [4]byte
-	//	binary.LittleEndian.PutUint32(buf[:], 128*1024*1024)
-	//	err = syscall.Setsockopt(fd, syscall.SOL_SOCKET, syscall.SO_SNDBUF, &buf[0], 4)
-	//	assert(err == nil)
-	//}
 
 	pkt := make([]byte, size)
 
