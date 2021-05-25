@@ -23,6 +23,7 @@ type Client struct {
 	FlushMs int
 	Debug   bool
 	SimLoss float64
+	Obfs bool
 }
 
 func getRandomUDPConn() (net.PacketConn, error) {
@@ -35,7 +36,7 @@ func getRandomUDPConn() (net.PacketConn, error) {
 		}
 	}()
 
-	for i := 0; i < 128; i++ {
+	for i := 0; i < 111; i++ {
 		conn, err := net.ListenPacket("udp", ":0")
 		if err != nil {
 			return nil, errors.Wrap(err, "listen for server")
@@ -43,7 +44,7 @@ func getRandomUDPConn() (net.PacketConn, error) {
 		conns = append(conns, conn)
 	}
 
-	idx := rand.Intn(len(conns))
+	idx := int(time.Duration(time.Now().UnixNano() / 1000000)) % len(conns)
 	conn := conns[idx]
 	conns[idx] = nil
 	return conn, nil
@@ -75,6 +76,13 @@ func (c *Client) Run(ctx context.Context) error {
 	// client addr
 	var pcaddr unsafe.Pointer
 
+	// misc
+	randgen := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(&c)))))
+
+	// obfs
+	obfs := single_udp_tun.Obfs2{Rand: randgen}
+	obfsBuf := make([]byte, 128 * 1024)
+
 	// local to server
 	go func() {
 		ctx := ctxlog.Push(ctx, "[l2s]")
@@ -82,11 +90,16 @@ func (c *Client) Run(ctx context.Context) error {
 
 		output := func(ctx context.Context, shard []byte) {
 			// simulate packet loss
-			if c.SimLoss > 0 && rand.Float64() < c.SimLoss {
+			if c.SimLoss > 0 && randgen.Float64() < c.SimLoss {
 				if c.Debug {
 					ctxlog.Debugf(ctx, "simulate loss")
 				}
 				return
+			}
+
+			// obfs
+			if c.Obfs {
+				shard = obfs.Encode(obfsBuf, shard)
 			}
 
 			// write to server
@@ -106,7 +119,7 @@ func (c *Client) Run(ctx context.Context) error {
 			Loss:   c.Loss,
 			Debug:  c.Debug,
 		}
-		rsSender.SetGroupId(rand.Uint32()) // hack to reduce group id collision after reboot
+		rsSender.SetGroupId(randgen.Uint32()) // hack to reduce group id collision after reboot
 		nextFlushTs := time.Now().Add(time.Duration(c.FlushMs) * time.Millisecond)
 		buf := make([]byte, 128*1024)
 		for {
@@ -193,7 +206,17 @@ func (c *Client) Run(ctx context.Context) error {
 				continue
 			}
 
-			err = rsReceiver.Input(ctx, buf[:n])
+			// deobfs
+			pkt := buf[:n]
+			if c.Obfs {
+				pkt, err = obfs.Decode(pkt[single_udp_tun.Obfs2HeaderSize:], pkt)
+				if err != nil {
+					ctxlog.Errorf(ctx, "obfs.Decode(): %v", err)
+					continue
+				}
+			}
+
+			err = rsReceiver.Input(ctx, pkt)
 			if err != nil {
 				ctxlog.Errorf(ctx, "[RSReceiver::Input]: %v", err)
 			}
@@ -215,10 +238,9 @@ func main() {
 	flag.IntVar(&c.FlushMs, "flush-ms", 20, "interval for flush RSSender (milliseconds)")
 	flag.BoolVar(&c.Debug, "debug", false, "debug log")
 	flag.Float64Var(&c.SimLoss, "simloss", 0, "simulate sending packet loss")
+	flag.BoolVar(&c.Obfs, "obfs", false, "enable obfuscation")
 	flag.StringVar(&debugServer, "debug-server", "", "start a debug server at this address")
 	flag.Parse()
-
-	rand.Seed(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(&c))))
 
 	ctx := context.Background()
 	if debugServer != "" {

@@ -27,6 +27,8 @@ type Server struct {
 	Loss    float64
 	FlushMs int
 	Debug   bool
+	// obfs
+	Obfs bool
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -54,6 +56,13 @@ func (s *Server) Run(ctx context.Context) error {
 	// client addr
 	var pcaddr unsafe.Pointer
 
+	// misc
+	randgen := rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(&s)))))
+
+	// obfs
+	obfs := single_udp_tun.Obfs2{Rand: randgen}
+	obfsBuf := make([]byte, 128 * 1024)
+
 	// target to client
 	go func() {
 		ctx := ctxlog.Push(ctx, "[t2c]")
@@ -65,6 +74,11 @@ func (s *Server) Run(ctx context.Context) error {
 			if caddr == nil {
 				ctxlog.Errorf(ctx, "client addr not learned")
 				return
+			}
+
+			// obfs
+			if s.Obfs {
+				shard = obfs.Encode(obfsBuf, shard)
 			}
 
 			// write to client
@@ -85,7 +99,7 @@ func (s *Server) Run(ctx context.Context) error {
 			Loss:   s.Loss,
 			Debug:  s.Debug,
 		}
-		rsSender.SetGroupId(rand.Uint32()) // hack to reduce group id collision after reboot
+		rsSender.SetGroupId(randgen.Uint32()) // hack to reduce group id collision after reboot
 		nextFlushTs := time.Now().Add(time.Duration(s.FlushMs) * time.Millisecond)
 		buf := make([]byte, 128*1024)
 		for {
@@ -161,6 +175,16 @@ func (s *Server) Run(ctx context.Context) error {
 				continue
 			}
 
+			// deobfs
+			pkt := buf[:n]
+			if s.Obfs {
+				pkt, err = obfs.Decode(pkt[single_udp_tun.Obfs2HeaderSize:], pkt)
+				if err != nil {
+					ctxlog.Errorf(ctx, "obfs.Decode(): %v", err)
+					continue
+				}
+			}
+
 			// store client addr
 			oaddr := (*net.UDPAddr)(atomic.SwapPointer(&pcaddr, unsafe.Pointer(addr.(*net.UDPAddr))))
 			if oaddr == nil {
@@ -169,7 +193,7 @@ func (s *Server) Run(ctx context.Context) error {
 				ctxlog.Warnf(ctx, "client addr changed: %v -> %v", oaddr, addr)
 			}
 
-			err = rsReceiver.Input(ctx, buf[:n])
+			err = rsReceiver.Input(ctx, pkt)
 			if err != nil {
 				ctxlog.Errorf(ctx, "[RSReceiver::Input]: %v", err)
 			}
@@ -191,10 +215,9 @@ func main() {
 	flag.Float64Var(&s.Loss, "loss", 0, "loss rate")
 	flag.IntVar(&s.FlushMs, "flush-ms", 20, "interval for flush RSSender (milliseconds)")
 	flag.BoolVar(&s.Debug, "debug", false, "debug log")
+	flag.BoolVar(&s.Obfs, "obfs", false, "enable obfuscation")
 	flag.StringVar(&debugServer, "debug-server", "", "start a debug server at this address")
 	flag.Parse()
-
-	rand.Seed(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(&s))))
 
 	ctx := context.Background()
 	if debugServer != "" {
