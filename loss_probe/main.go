@@ -7,12 +7,12 @@ import (
 	"flag"
 	"fmt"
 	"github.com/account-login/ctxlog"
+	"github.com/account-login/single_udp_tun"
 	"github.com/account-login/single_udp_tun/dns"
 	"github.com/pkg/errors"
 	"log"
 	"math/rand"
 	"net"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -386,24 +386,8 @@ func (self *Probe) Main(ctx context.Context) error {
 	} // incomming packets
 }
 
-var t0 = time.Now()
-
 func nanotime() int64 {
-	if runtime.GOOS == "windows" {
-		return nanotimeWin() // 10us
-	}
-	return time.Now().Sub(t0).Nanoseconds() // 1ms
-}
-
-// from runtime·nanotime1
-func nanotimeWin() int64 {
-	for {
-		hilo := *(*int64)(unsafe.Pointer(uintptr(0x7ffe0008)))
-		hi2 := *(*int32)(unsafe.Pointer(uintptr(0x7ffe0008 + 8)))
-		if hi2 == int32(hilo>>32) {
-			return hilo
-		}
-	}
+	return single_udp_tun.Nanotime()
 }
 
 func (self *Probe) Export() (results []NodeExport) {
