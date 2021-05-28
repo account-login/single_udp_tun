@@ -18,7 +18,7 @@ type TSCCalibration struct {
 	LastUnix int64
 	LastTSC  int64
 	// precise multiplication without fp
-	Multiplier uint64
+	Multiplier uint32
 	Shift      uint32
 }
 
@@ -40,31 +40,27 @@ func (cal *TSCCalibration) Cycle2Nano(v int64) int64 {
 	return multiply(v, cal.Multiplier, cal.Shift)
 }
 
-// XXX: is 32bit multiplier enough?
-func genMultiplier(K float64) (uint64, uint32) {
+func genMultiplier(K float64) (multiplier uint32, shift uint32) {
 	assert(0 < K && K <= 1) // FIXME: handle K > 1
-	shift := uint32(0)
-	for K < float64(1<<63) {
+	for K <= float64(1<<31) {
 		K *= 2
 		shift++
 	}
-	assert(K <= float64(1<<64))
-	assert(shift >= 64)
-	return uint64(K), shift
+	assert(K <= float64(1<<32))
+	assert(shift >= 32)
+	multiplier = uint32(K)
+	return
 }
 
 // NOTE: input uint64 and return uint64
-func multiply(v int64, multiplier uint64, shift uint32) int64 {
-	assert(shift >= 64)
+func multiply(v int64, multiplier uint32, shift uint32) int64 {
+	assert(shift >= 32)
 
-	mh := multiplier >> 32
-	ml := uint64(uint32(multiplier))
 	vh := uint64(v) >> 32
 	vl := uint64(uint32(v))
 
-	r := vh * mh >> (shift - 64)
-	r += vh * ml >> (shift - 32)
-	r += vl * mh >> (shift - 32)
+	r := vh * uint64(multiplier) >> (shift - 32)
+	r += vl * uint64(multiplier) >> (shift - 0)
 	return int64(r)
 }
 
@@ -83,7 +79,7 @@ func Calibrate(n int) (r TSCCalibration) {
 	for i := 0; i < n; {
 		unix := time.Now().UnixNano()
 		tsc := RDTSC()
-		if prev != unix { // for low resolution time.Now(), only accept data when unix ts is increasing
+		if unix > prev { // for low resolution time.Now(), only accept data when unix ts is increasing
 			ox[i] = tsc
 			oy[i] = unix
 			i++

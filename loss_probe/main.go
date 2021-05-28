@@ -435,7 +435,7 @@ func main() {
 	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
 	//time.Sleep(time.Millisecond * 10)
 	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
-	//time.Sleep(time.Millisecond * 10)
+	//time.Sleep(time.Millisecond * 1000)
 	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
 
 	//tarr := make([]int64, 100)
