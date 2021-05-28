@@ -387,6 +387,7 @@ func (self *Probe) Main(ctx context.Context) error {
 }
 
 func nanotime() int64 {
+	//return single_udp_tun.TSCNano()
 	return single_udp_tun.Nanotime()
 }
 
@@ -419,14 +420,35 @@ func probePrint(p *Probe) {
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
+	//single_udp_tun.TSCParam = single_udp_tun.Calibrate(20)
+	//fmt.Printf("%+v\n", single_udp_tun.TSCParam)
+
+	//r := single_udp_tun.Calibrate(2)
+	//fmt.Println(r)
+	//r = single_udp_tun.Calibrate(10)
+	//fmt.Println(r)
+	//r = single_udp_tun.Calibrate(100)
+	//fmt.Println(r)
+	//r = single_udp_tun.Calibrate(1000)
+	//fmt.Println(r)
+	//time.Sleep(time.Millisecond * 10)
+	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
+	//time.Sleep(time.Millisecond * 10)
+	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
+	//time.Sleep(time.Millisecond * 10)
+	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
+
+	//tarr := make([]int64, 100)
 	//t := nanotime()
-	//for {
+	//for i := 0; i < len(tarr); {
 	//	t2 := nanotime()
-	//	if t2 != t {
-	//		println(t2 - t)
+	//	if t2 != t || true {
+	//		tarr[i] = t2 - t
+	//		i++
 	//		t = t2
 	//	}
 	//}
+	//fmt.Println(tarr)
 
 	p := Probe{}
 	flag.StringVar(&p.Bind, "bind", ":200", "bind on address")
