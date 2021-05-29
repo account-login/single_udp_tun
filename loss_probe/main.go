@@ -11,6 +11,7 @@ import (
 	"github.com/account-login/single_udp_tun/dns"
 	"github.com/pkg/errors"
 	"log"
+	"math"
 	"math/rand"
 	"net"
 	"strings"
@@ -45,15 +46,18 @@ type Node struct {
 type NodeStats struct {
 	SRTT   int64
 	RTTVar int64
-	Loss1  int64
-	Count1 int64
-	Loss2  int64
-	Count2 int64
+	Loss1  uint32
+	Late1  uint32 // pkt arrived after timeout
+	Count1 uint32
+	Loss2  uint32
+	Count2 uint32
+	LossP  uint32 // the loss rate in percentage [0, 100]
 }
 
 type NodeExport struct {
-	Dst   string
-	Stats NodeStats
+	UnixMS int64
+	Dst    string
+	Stats  NodeStats
 }
 
 type PktReq struct {
@@ -67,7 +71,7 @@ type PktAck struct {
 
 // a < b
 func seqBefore(a uint64, b uint64) bool {
-	return b-a < (1<<63) && a != b
+	return !(a-b < (1 << 63))
 }
 
 func (self *Node) onReq(pkt *PktReq) (ack *PktAck) {
@@ -110,7 +114,7 @@ func (self *Node) onAck(pkt *PktAck) {
 	now := nanotime()
 	self.ackPrevTs = now
 
-	rttMax := int64(1 * 1000 * 1000 * 1000) // 1s
+	const rttMax = int64(1 * 1000 * 1000 * 1000) // 1s
 	rtt := rttMax
 	countBegin := pkt.seqEnd - kEntrySize + 1
 	// for each seq from high to low
@@ -180,9 +184,19 @@ func (self *Node) onAck(pkt *PktAck) {
 	}
 
 	// count loss
-	rto := self.out.SRTT + 4*self.out.RTTVar
+	rtovar := 4 * self.out.RTTVar
+	if rtovar < self.out.SRTT/2 {
+		rtovar = self.out.SRTT / 2
+	}
+	// NOTE: differs from rfc: RTO = SRTT + max(SRTT / 2, 4 * RTTVAR)
+	// NOTE: more tolerent to rtt variance
+	rto := self.out.SRTT + rtovar
+	// 10ms <= rto <= 1s
 	if rto > 1000*1000*1000 {
-		rto = 1000 * 1000 * 1000 // max 1s
+		rto = 1000 * 1000 * 1000
+	}
+	if rto < 10*1000*1000 {
+		rto = 10 * 1000 * 1000
 	}
 	countEnd := pkt.seqEnd // the latest seq with rto ellapsed
 	for self.ackPool[countEnd%kEntrySize].tsSend > now-rto && !seqBefore(countEnd, countBegin) {
@@ -194,6 +208,7 @@ func (self *Node) onAck(pkt *PktAck) {
 	}
 
 	self.out.Loss1 = 0
+	self.out.Late1 = 0
 	self.out.Loss2 = 0
 	self.out.Count1 = 0
 	self.out.Count2 = 0
@@ -201,18 +216,32 @@ func (self *Node) onAck(pkt *PktAck) {
 		ent := &self.ackPool[seq%kEntrySize]
 		assert(ent.tsSend > 0 && ent.seq == seq)
 
-		isLoss := int64(0)
-		if ent.tsRecv == 0 || ent.tsRecv > ent.tsSend+rto {
+		isLoss := uint32(0)
+		isLate := uint32(0)
+		if ent.tsRecv == 0 {
 			isLoss = 1
+		}
+		if ent.tsRecv > ent.tsSend+rto {
+			isLoss = 1
+			isLate = 1
 		}
 		if self.out.Count1 < 100 {
 			self.out.Loss1 += isLoss
+			self.out.Late1 += isLate
 			self.out.Count1++
 		}
 		if self.out.Count2 < 1000 {
 			self.out.Loss2 += isLoss
 			self.out.Count2++
 		}
+	}
+	if self.out.Count1 > 10 {
+		// this should over estimate most of the time
+		lossRate := math.Max(
+			float64(self.out.Loss1)/float64(self.out.Count1),
+			float64(self.out.Loss2)/float64(self.out.Count2),
+		)
+		self.out.LossP = uint32(math.Ceil(lossRate * 100))
 	}
 }
 
@@ -224,8 +253,10 @@ func assert(condition bool) {
 
 type Probe struct {
 	// params
-	Bind  string
-	Peers []string
+	Bind    string
+	Peers   []string
+	SimLoss float64
+	Obfs    bool
 	// private
 	conn      *net.UDPConn
 	mu        sync.Mutex
@@ -247,35 +278,56 @@ func (self *Probe) addPeer(ctx context.Context, addr *net.UDPAddr) *Node {
 	// ping peer every 100ms
 	go func() {
 		ctx := ctxlog.Pushf(ctx, "[peer:%v]", addr)
-		ctxlog.Infof(ctx, "start")
+		ctxlog.Infof(ctx, "started")
 
-		buf := make([]byte, 8+8)
-		binary.LittleEndian.PutUint64(buf[:8], kCmdReq)
+		obfs := single_udp_tun.Obfs2{} // uninitialized
+		buf := make([]byte, 128*1024)
+
 		for {
-			now := nanotime()
+			pkt := buf[single_udp_tun.Obfs2HeaderSize:]
+			pkt = pkt[:16]
+			binary.LittleEndian.PutUint64(pkt[:8], kCmdReq)
 
-			self.mu.Lock()
+			stop := func() bool {
+				self.mu.Lock()
+				defer self.mu.Unlock()
 
-			// peer no ack in 10s
-			if !node.isFixed && nanotime() > node.ackPrevTs+10*1000*1000*1000 {
-				ctxlog.Warnf(ctx, "expired")
-				delete(self.addr2node, addr.String())
-				self.mu.Unlock()
+				// delete peer without ack in 10s
+				if !node.isFixed && nanotime() > node.ackPrevTs+10*1000*1000*1000 {
+					ctxlog.Warnf(ctx, "expired")
+					delete(self.addr2node, addr.String())
+					return true
+				}
+
+				// construct pkt and log the entry
+				binary.LittleEndian.PutUint64(pkt[8:16], node.seqNext)
+				node.ackPool[node.seqNext%kEntrySize] = Entry{
+					seq:    node.seqNext,
+					tsSend: nanotime(),
+				}
+				node.seqNext++
+
+				// init obfs
+				if self.Obfs && obfs.Rand == nil {
+					obfs.Rand = rand.New(rand.NewSource(self.randgen.Int63()))
+				}
+
+				return false
+			}()
+			if stop {
 				return
 			}
 
-			binary.LittleEndian.PutUint64(buf[8:16], node.seqNext)
-			node.ackPool[node.seqNext%kEntrySize] = Entry{
-				seq:    node.seqNext,
-				tsSend: now,
+			if self.Obfs {
+				pkt = obfs.Encode(buf, pkt)
 			}
-			node.seqNext++
 
-			self.mu.Unlock()
-
-			_, err := self.conn.WriteToUDP(buf, addr)
-			if err != nil {
-				ctxlog.Errorf(ctx, "WriteToUDP() error: %v", err)
+			drop := self.SimLoss > 0 && self.randgen.Float64() < self.SimLoss
+			if !drop {
+				_, err := self.conn.WriteToUDP(pkt, addr)
+				if err != nil {
+					ctxlog.Errorf(ctx, "WriteToUDP() error: %v", err)
+				}
 			}
 			time.Sleep(100 * time.Millisecond)
 		}
@@ -310,6 +362,7 @@ func (self *Probe) Main(ctx context.Context) error {
 
 	// create rng
 	self.randgen = rand.New(rand.NewSource(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(&self)))))
+	obfs := single_udp_tun.Obfs2{Rand: self.randgen}
 
 	// create peers
 	self.mu.Lock()
@@ -338,6 +391,13 @@ func (self *Probe) Main(ctx context.Context) error {
 			ctxlog.Warnf(ctx, "bad pkt [from:%s]: %s", raddr, pkt)
 			continue
 		}
+		if self.Obfs {
+			pkt, err = obfs.Decode(pkt[single_udp_tun.Obfs2HeaderSize:], pkt)
+			if err != nil {
+				ctxlog.Errorf(ctx, "obfs.Decode(): %v", err)
+				continue
+			}
+		}
 		//ctxlog.Debugf(ctx, "pkt: %v", pkt)
 
 		cmd := binary.LittleEndian.Uint64(pkt[:8])
@@ -354,10 +414,15 @@ func (self *Probe) Main(ctx context.Context) error {
 			self.mu.Unlock()
 
 			// reply
-			binary.LittleEndian.PutUint64(buf[:8], kCmdAck)
-			binary.LittleEndian.PutUint64(buf[8:16], pktAck.seqEnd)
-			copy(buf[16:16+128], pktAck.bitmap[:])
-			_, err := dns.WriteToSessionUDP(conn, buf[:16+128], sess)
+			pkt := buf[single_udp_tun.Obfs2HeaderSize:]
+			pkt = pkt[:16+128]
+			binary.LittleEndian.PutUint64(pkt[:8], kCmdAck)
+			binary.LittleEndian.PutUint64(pkt[8:16], pktAck.seqEnd)
+			copy(pkt[16:16+128], pktAck.bitmap[:])
+			if self.Obfs {
+				pkt = obfs.Encode(buf, pkt)
+			}
+			_, err := dns.WriteToSessionUDP(conn, pkt, sess) // FIXME: blocking
 			if err != nil {
 				ctxlog.Errorf(ctx, "reply [peer:%s] error: %v", raddr, err)
 				continue
@@ -387,18 +452,20 @@ func (self *Probe) Main(ctx context.Context) error {
 }
 
 func nanotime() int64 {
-	//return single_udp_tun.TSCNano()
 	return single_udp_tun.Nanotime()
 }
 
 func (self *Probe) Export() (results []NodeExport) {
+	nowMS := time.Now().UnixNano() / 1000000
+
 	self.mu.Lock()
 	defer self.mu.Unlock()
 
 	for addr, node := range self.addr2node {
 		export := NodeExport{
-			Dst:   addr,
-			Stats: node.out,
+			UnixMS: nowMS,
+			Dst:    addr,
+			Stats:  node.out,
 		}
 		results = append(results, export)
 	}
@@ -408,8 +475,7 @@ func (self *Probe) Export() (results []NodeExport) {
 func probePrint(p *Probe) {
 	for {
 		time.Sleep(1 * time.Second)
-		results := p.Export()
-		for _, r := range results {
+		for _, r := range p.Export() {
 			buf, err := json.Marshal(&r)
 			assert(err == nil)
 			fmt.Println(string(buf))
@@ -420,40 +486,12 @@ func probePrint(p *Probe) {
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
-	//single_udp_tun.TSCParam = single_udp_tun.Calibrate(20)
-	//fmt.Printf("%+v\n", single_udp_tun.TSCParam)
-
-	//r := single_udp_tun.Calibrate(2)
-	//fmt.Println(r)
-	//r = single_udp_tun.Calibrate(10)
-	//fmt.Println(r)
-	//r = single_udp_tun.Calibrate(100)
-	//fmt.Println(r)
-	//r = single_udp_tun.Calibrate(1000)
-	//fmt.Println(r)
-	//time.Sleep(time.Millisecond * 10)
-	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
-	//time.Sleep(time.Millisecond * 10)
-	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
-	//time.Sleep(time.Millisecond * 1000)
-	//fmt.Println(time.Now().UnixNano() - single_udp_tun.TSCNano())
-
-	//tarr := make([]int64, 100)
-	//t := nanotime()
-	//for i := 0; i < len(tarr); {
-	//	t2 := nanotime()
-	//	if t2 != t || true {
-	//		tarr[i] = t2 - t
-	//		i++
-	//		t = t2
-	//	}
-	//}
-	//fmt.Println(tarr)
-
 	p := Probe{}
 	flag.StringVar(&p.Bind, "bind", ":200", "bind on address")
 	peerList := ""
 	flag.StringVar(&peerList, "peers", "", "comma seperated address for peers")
+	flag.Float64Var(&p.SimLoss, "simloss", 0, "simulate packet loss rate for sending")
+	flag.BoolVar(&p.Obfs, "obfs", false, "enable obfuscation")
 	flag.Parse()
 	if peerList != "" {
 		p.Peers = strings.Split(peerList, ",")

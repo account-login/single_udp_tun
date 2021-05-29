@@ -72,6 +72,7 @@ func (self *Obfs2) Encode(header []byte, payload []byte) []byte {
 	header = header[:8+len(payload)+nPad]
 	s := SplitMix64(hdr)
 	s.XORKeyStream(header[8:], payload)
+	s.XORKeyStream(header[8+len(payload):], header[8+len(payload):]) // random padding
 
 	return header
 }
@@ -87,12 +88,12 @@ func (self *Obfs2) Decode(dst []byte, src []byte) ([]byte, error) {
 	hdr = ximf64(hdr)
 	sz := int(hdr & 0xffff)
 	hdrsum := uint32(hdr >> 32)
-	if len(src) < 8 + sz {
+	if len(src) < 8+sz {
 		return nil, fmt.Errorf("[len_src:%v] < 8 + [sz:%v]", len(src), sz)
 	}
 
 	if sz > 0 {
-		_ = dst[sz-1]	// TODO: grow buf
+		_ = dst[sz-1] // TODO: grow buf
 		dst = dst[:sz]
 
 		s.XORKeyStream(dst, src[8:8+sz])

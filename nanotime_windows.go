@@ -4,6 +4,7 @@ package single_udp_tun
 
 import (
 	"golang.org/x/sys/windows"
+	"time"
 	"unsafe"
 )
 
@@ -12,6 +13,7 @@ func Nanotime() int64 {
 }
 
 var nanoPerTick = int64(0)
+var nanoOffset = int64(0)
 var qpc *windows.Proc
 
 func init() {
@@ -22,14 +24,15 @@ func init() {
 	ok, _, _ := qpf.Call(uintptr(unsafe.Pointer(&freq)))
 	assert(ok != 0)
 	nanoPerTick = 1000 * 1000 * 1000 / freq // NOTE: loss of precision
-	assert(nanoPerTick > 0)	// 100 on my pc
+	assert(nanoPerTick > 0)                 // 100 on my pc
+	nanoOffset = time.Now().UnixNano() - nanotimeQPC()
 }
 
 func nanotimeQPC() int64 {
 	cnt := int64(0)
 	ok, _, _ := qpc.Call(uintptr(unsafe.Pointer(&cnt)))
 	assert(ok != 0)
-	return cnt * nanoPerTick
+	return cnt*nanoPerTick + nanoOffset
 }
 
 //// KUSER_SHARED_DATA, 1ms resolution
