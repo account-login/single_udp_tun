@@ -41,12 +41,12 @@ func (cal *TSCCalibration) Cycle2Nano(v int64) int64 {
 }
 
 func genMultiplier(K float64) (multiplier uint32, shift uint32) {
-	assert(0 < K && K <= 1) // FIXME: handle K > 1
-	for K <= float64(1<<31) {
+	assert(0 < K && K < 1) // FIXME: handle K >= 1
+	for K < float64(1<<31) {
 		K *= 2
 		shift++
 	}
-	assert(K <= float64(1<<32))
+	assert(K < float64(1<<32))
 	assert(shift >= 32)
 	multiplier = uint32(K)
 	return
