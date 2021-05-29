@@ -264,7 +264,8 @@ type Probe struct {
 	randgen   *rand.Rand
 }
 
-func (self *Probe) addPeer(ctx context.Context, addr *net.UDPAddr) *Node {
+func (self *Probe) addPeer(ctx context.Context, sess *dns.SessionUDP) *Node {
+	addr := sess.RemoteAddr().String()
 	node := &Node{
 		seqNext:   self.randgen.Uint64(), // randomize the initial seq
 		ackPrevTs: nanotime(),
@@ -273,7 +274,7 @@ func (self *Probe) addPeer(ctx context.Context, addr *net.UDPAddr) *Node {
 	if self.addr2node == nil {
 		self.addr2node = map[string]*Node{}
 	}
-	self.addr2node[addr.String()] = node
+	self.addr2node[addr] = node
 
 	// ping peer every 100ms
 	go func() {
@@ -295,7 +296,7 @@ func (self *Probe) addPeer(ctx context.Context, addr *net.UDPAddr) *Node {
 				// delete peer without ack in 10s
 				if !node.isFixed && nanotime() > node.ackPrevTs+10*1000*1000*1000 {
 					ctxlog.Warnf(ctx, "expired")
-					delete(self.addr2node, addr.String())
+					delete(self.addr2node, addr)
 					return true
 				}
 
@@ -324,7 +325,7 @@ func (self *Probe) addPeer(ctx context.Context, addr *net.UDPAddr) *Node {
 
 			drop := self.SimLoss > 0 && self.randgen.Float64() < self.SimLoss
 			if !drop {
-				_, err := self.conn.WriteToUDP(pkt, addr)
+				_, err := dns.WriteToSessionUDP(self.conn, pkt, sess)
 				if err != nil {
 					ctxlog.Errorf(ctx, "WriteToUDP() error: %v", err)
 				}
@@ -371,7 +372,7 @@ func (self *Probe) Main(ctx context.Context) error {
 		if err != nil {
 			return errors.Wrapf(err, "ResolveUDPAddr(%v)", peer)
 		}
-		node := self.addPeer(ctx, peerAddr)
+		node := self.addPeer(ctx, &dns.SessionUDP{RAddr: peerAddr, Context: nil})
 		node.isFixed = true
 	}
 	self.mu.Unlock()
@@ -408,7 +409,7 @@ func (self *Probe) Main(ctx context.Context) error {
 			self.mu.Lock()
 			node := self.addr2node[raddr.String()]
 			if node == nil {
-				node = self.addPeer(ctx, raddr)
+				node = self.addPeer(ctx, sess)
 			}
 			pktAck := node.onReq(&pktReq)
 			self.mu.Unlock()
