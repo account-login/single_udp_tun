@@ -484,6 +484,9 @@ func probePrint(p *Probe) {
 	}
 }
 
+// TODO: human ts
+// TODO: node id
+// TODO: kCmdExport
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
