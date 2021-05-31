@@ -29,6 +29,7 @@ type Entry struct {
 }
 
 type Node struct {
+	id string
 	// sent req
 	seqNext uint64
 	ackPool [kEntrySize]Entry
@@ -55,7 +56,9 @@ type NodeStats struct {
 }
 
 type NodeExport struct {
+	Time   string
 	UnixMS int64
+	ID     string
 	Dst    string
 	Stats  NodeStats
 }
@@ -257,6 +260,7 @@ type Probe struct {
 	Peers   []string
 	SimLoss float64
 	Obfs    bool
+	ID      string
 	// private
 	conn      *net.UDPConn
 	mu        sync.Mutex
@@ -286,8 +290,9 @@ func (self *Probe) addPeer(ctx context.Context, sess *dns.SessionUDP) *Node {
 
 		for {
 			pkt := buf[single_udp_tun.Obfs2HeaderSize:]
-			pkt = pkt[:16]
+			pkt = pkt[:32]
 			binary.LittleEndian.PutUint64(pkt[:8], kCmdReq)
+			setId(pkt, self.ID)
 
 			stop := func() bool {
 				self.mu.Lock()
@@ -338,10 +343,10 @@ func (self *Probe) addPeer(ctx context.Context, sess *dns.SessionUDP) *Node {
 }
 
 // protocol
-// cmd seq
-//  8b  8b
-// cmd seqEnd bitmap
-//  8b     8b   128b
+// cmd seq id
+//  8b 8b  16b
+// cmd seq id  bitmap
+//  8b 8b  16b 128b
 
 const (
 	kCmdReq = 1
@@ -388,10 +393,6 @@ func (self *Probe) Main(ctx context.Context) error {
 
 		raddr := sess.RemoteAddr().(*net.UDPAddr)
 		pkt := buf[:n]
-		if len(pkt) < 16 {
-			ctxlog.Warnf(ctx, "bad pkt [from:%s]: %s", raddr, pkt)
-			continue
-		}
 		if self.Obfs {
 			pkt, err = obfs.Decode(pkt[single_udp_tun.Obfs2HeaderSize:], pkt)
 			if err != nil {
@@ -399,9 +400,14 @@ func (self *Probe) Main(ctx context.Context) error {
 				continue
 			}
 		}
-		//ctxlog.Debugf(ctx, "pkt: %v", pkt)
+		if len(pkt) < 32 {
+			ctxlog.Warnf(ctx, "bad pkt [from:%s]: %s", raddr, pkt)
+			continue
+		}
 
 		cmd := binary.LittleEndian.Uint64(pkt[:8])
+		id := getId(pkt)
+
 		if cmd == kCmdReq {
 			pktReq := PktReq{}
 			pktReq.seq = binary.LittleEndian.Uint64(pkt[8:16])
@@ -411,15 +417,17 @@ func (self *Probe) Main(ctx context.Context) error {
 			if node == nil {
 				node = self.addPeer(ctx, sess)
 			}
+			node.id = id
 			pktAck := node.onReq(&pktReq)
 			self.mu.Unlock()
 
 			// reply
 			pkt := buf[single_udp_tun.Obfs2HeaderSize:]
-			pkt = pkt[:16+128]
+			pkt = pkt[:32+128]
 			binary.LittleEndian.PutUint64(pkt[:8], kCmdAck)
 			binary.LittleEndian.PutUint64(pkt[8:16], pktAck.seqEnd)
-			copy(pkt[16:16+128], pktAck.bitmap[:])
+			setId(pkt, self.ID)
+			copy(pkt[32:32+128], pktAck.bitmap[:])
 			if self.Obfs {
 				pkt = obfs.Encode(buf, pkt)
 			}
@@ -429,17 +437,18 @@ func (self *Probe) Main(ctx context.Context) error {
 				continue
 			}
 		} else if cmd == kCmdAck {
-			if len(pkt) < 8+8+128 {
+			if len(pkt) < 32+128 {
 				ctxlog.Warnf(ctx, "bad pkt [from:%s]: %s", raddr, pkt)
 				continue
 			}
 			pktAck := PktAck{}
 			pktAck.seqEnd = binary.LittleEndian.Uint64(pkt[8:16])
-			copy(pktAck.bitmap[:], pkt[16:16+128])
+			copy(pktAck.bitmap[:], pkt[32:32+128])
 
 			self.mu.Lock()
 			node := self.addr2node[raddr.String()]
 			if node != nil {
+				node.id = id
 				node.onAck(&pktAck)
 			} else {
 				ctxlog.Warnf(ctx, "ack [from:%s] unknown", raddr)
@@ -452,12 +461,28 @@ func (self *Probe) Main(ctx context.Context) error {
 	} // incomming packets
 }
 
+func getId(pkt []byte) string {
+	idbuf := pkt[16:32]
+	for len(idbuf) > 0 && idbuf[len(idbuf)-1] == 0 {
+		idbuf = idbuf[:len(idbuf)-1]
+	}
+	return string(idbuf)
+}
+
+func setId(pkt []byte, id string) {
+	var zero [16]byte
+	copy(pkt[16:32], zero[:]) // nul terminated
+	copy(pkt[16:32], id)
+}
+
 func nanotime() int64 {
 	return single_udp_tun.Nanotime()
 }
 
 func (self *Probe) Export() (results []NodeExport) {
-	nowMS := time.Now().UnixNano() / 1000000
+	t0 := time.Now()
+	nowMS := t0.UnixNano() / 1000000
+	nowStr := t0.Format("2006-01-02+15:04:05.000-0700")
 
 	self.mu.Lock()
 	defer self.mu.Unlock()
@@ -465,6 +490,8 @@ func (self *Probe) Export() (results []NodeExport) {
 	for addr, node := range self.addr2node {
 		export := NodeExport{
 			UnixMS: nowMS,
+			Time:   nowStr,
+			ID:     node.id,
 			Dst:    addr,
 			Stats:  node.out,
 		}
@@ -484,8 +511,6 @@ func probePrint(p *Probe) {
 	}
 }
 
-// TODO: human ts
-// TODO: node id
 // TODO: kCmdExport
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
@@ -496,10 +521,12 @@ func main() {
 	flag.StringVar(&peerList, "peers", "", "comma seperated address for peers")
 	flag.Float64Var(&p.SimLoss, "simloss", 0, "simulate packet loss rate for sending")
 	flag.BoolVar(&p.Obfs, "obfs", false, "enable obfuscation")
+	flag.StringVar(&p.ID, "id", "", "node ID, must not exceed 16 bytes")
 	flag.Parse()
 	if peerList != "" {
 		p.Peers = strings.Split(peerList, ",")
 	}
+	assert(len(p.ID) <= 16)
 
 	go probePrint(&p)
 	ctx := context.Background()

@@ -23,7 +23,7 @@ type Client struct {
 	FlushMs int
 	Debug   bool
 	SimLoss float64
-	Obfs bool
+	Obfs    bool
 }
 
 func getRandomUDPConn() (net.PacketConn, error) {
@@ -44,7 +44,7 @@ func getRandomUDPConn() (net.PacketConn, error) {
 		conns = append(conns, conn)
 	}
 
-	idx := int(time.Duration(time.Now().UnixNano() / 1000000)) % len(conns)
+	idx := int(time.Duration(time.Now().UnixNano()/1000000)) % len(conns)
 	conn := conns[idx]
 	conns[idx] = nil
 	return conn, nil
@@ -81,7 +81,7 @@ func (c *Client) Run(ctx context.Context) error {
 
 	// obfs
 	obfs := single_udp_tun.Obfs2{Rand: randgen}
-	obfsBuf := make([]byte, 128 * 1024)
+	obfsBuf := make([]byte, 128*1024)
 
 	// local to server
 	go func() {
@@ -226,6 +226,8 @@ func (c *Client) Run(ctx context.Context) error {
 	return nil // unreachable
 }
 
+// TODO: adjust loss rate at runtime
+// TODO: export rs stats
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
 
