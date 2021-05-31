@@ -4,12 +4,14 @@ package tailf
 
 import "syscall"
 
-func FGetInode(fd uintptr) (uint64, error) {
+func Fstat(fd uintptr, stat *StatResult) error {
 	r := syscall.Stat_t{}
 	err := syscall.Fstat(int(fd), &r)
 	if err != nil {
-		return 0, err
+		return err
 	}
 
-	return r.Ino, nil
+	stat.Size = r.Size
+	stat.Inode = r.Ino
+	return nil
 }

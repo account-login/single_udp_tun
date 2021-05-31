@@ -17,18 +17,39 @@ type TailF struct {
 }
 
 type NoEOFReader struct {
-	r    io.Reader
+	fp   *os.File
 	done <-chan struct{}
 }
 
 func (self NoEOFReader) Read(p []byte) (n int, err error) {
-	for n, err = self.r.Read(p); err == io.EOF; {
-		time.Sleep(kInterval)
-		if self.done != nil {
-			_, yes := <-self.done
-			if yes {
-				break
+	fp := self.fp
+	for n, err = fp.Read(p); err == io.EOF; n, err = fp.Read(p) {
+		// get current offset
+		var off int64
+		off, err = fp.Seek(0, io.SeekCurrent)
+		if err != nil {
+			return 0, err
+		}
+		// get file size
+		var stat StatResult
+		err = Fstat(fp.Fd(), &stat)
+		if err != nil {
+			return 0, err
+		}
+		if stat.Size < off {
+			// file truncated, re-seek to end, will skip data here
+			_, err = fp.Seek(0, io.SeekEnd)
+			if err != nil {
+				return 0, err
 			}
+		}
+
+		// cancellation
+		select {
+		case <-time.After(kInterval):
+			continue
+		case <-self.done:
+			return
 		}
 	}
 	return
@@ -41,6 +62,7 @@ func (self *TailF) Run() {
 	var fp *os.File // protected by mu
 	var inode uint64
 	var suppressLog bool
+	var stat StatResult
 
 	defer func() {
 		mu.Lock()
@@ -53,14 +75,6 @@ func (self *TailF) Run() {
 
 	done := self.Ctx.Done()
 	for {
-		// check for cancellation
-		if done != nil {
-			_, yes := <-done
-			if yes {
-				break
-			}
-		}
-
 		mu.Lock()
 		cfp := fp
 		mu.Unlock()
@@ -83,24 +97,25 @@ func (self *TailF) Run() {
 				goto LCleanupOpen
 			}
 
-			inode, err = FGetInode(cfp.Fd())
+			err = Fstat(cfp.Fd(), &stat)
 			if err != nil {
 				ctxlog.Errorf(self.Ctx, "[tailf] error get inode [path:%v]: %v", self.Path, err)
 				goto LCleanupOpen
 			}
+			inode = stat.Inode
 			ctxlog.Debugf(self.Ctx, "[tailf] opened [path:%v][fd:%v][ino:%v]", self.Path, cfp.Fd(), inode)
 
 			// ok, start reading file
 			mu.Lock()
 			fp = cfp
 			mu.Unlock()
-			go func(cfp *os.File) {
-				scanner := bufio.NewScanner(NoEOFReader{r: cfp, done: done})
+			go func(cfp *os.File, fd uintptr, inode uint64) {
+				scanner := bufio.NewScanner(NoEOFReader{fp: cfp, done: done})
 				for scanner.Scan() {
 					self.Output <- scanner.Text()
 				}
 				err := scanner.Err() // don't care
-				ctxlog.Infof(self.Ctx, "[tailf] reader [fd:%v] exited with err: %v", cfp.Fd(), err)
+				ctxlog.Infof(self.Ctx, "[tailf] reader [prev_fd:%v][inode:%v] exited with err: %v", fd, inode, err)
 
 				// reset
 				mu.Lock()
@@ -109,7 +124,7 @@ func (self *TailF) Run() {
 					fp = nil
 				}
 				mu.Unlock()
-			}(cfp)
+			}(cfp, cfp.Fd(), stat.Inode)
 
 		LCleanupOpen:
 			if err != nil {
@@ -128,11 +143,12 @@ func (self *TailF) Run() {
 			}
 			suppressLog = false
 
-			minode, err = FGetInode(cfp.Fd())
+			err = Fstat(mfp.Fd(), &stat)
 			if err != nil {
 				ctxlog.Errorf(self.Ctx, "[tailf] error get inode [path:%v]: %v", self.Path, err)
 				goto LCleanupMon
 			}
+			minode = stat.Inode
 			if inode != minode {
 				ctxlog.Infof(
 					self.Ctx, "[tailf] [path:%v] inode changed [from:%v] to [to:%v]",
@@ -154,6 +170,12 @@ func (self *TailF) Run() {
 			}
 		}
 
-		time.Sleep(kInterval)
+		// cancellation
+		select {
+		case <-time.After(kInterval):
+			continue
+		case <-done:
+			return // the reader goroutine will be interrupted either by fp.Close() or the done chan
+		}
 	} // just loop
 }

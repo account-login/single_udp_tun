@@ -22,6 +22,6 @@ func main() {
 	}
 
 	for line := range out {
-		os.Stdout.WriteString(line + "\n")
+		_, _ = os.Stdout.WriteString(line + "\n")
 	}
 }
