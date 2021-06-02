@@ -7,6 +7,7 @@ import (
 	"github.com/account-login/ctxlog"
 	"github.com/account-login/single_udp_tun"
 	"github.com/pkg/errors"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -31,20 +32,26 @@ type Server struct {
 	Obfs bool
 }
 
+func safeClose(ctx context.Context, closer io.Closer) {
+	if err := closer.Close(); err != nil {
+		ctxlog.Errorf(ctx, "close: %v", err)
+	}
+}
+
 func (s *Server) Run(ctx context.Context) error {
 	// client
 	cconn, err := net.ListenPacket("udp", s.Addr)
 	if err != nil {
 		return errors.Wrap(err, "listen for client")
 	}
-	defer cconn.Close()
+	defer safeClose(ctx, cconn)
 
 	// target
 	tconn, err := net.ListenPacket("udp", s.Local)
 	if err != nil {
 		return errors.Wrap(err, "listen for target")
 	}
-	defer tconn.Close()
+	defer safeClose(ctx, tconn)
 
 	// target addr
 	taddr, err := net.ResolveUDPAddr("udp", s.Target)

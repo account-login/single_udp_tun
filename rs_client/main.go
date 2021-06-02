@@ -7,6 +7,7 @@ import (
 	"github.com/account-login/ctxlog"
 	"github.com/account-login/single_udp_tun"
 	"github.com/pkg/errors"
+	"io"
 	"log"
 	"math/rand"
 	"net"
@@ -26,12 +27,18 @@ type Client struct {
 	Obfs    bool
 }
 
+func safeClose(ctx context.Context, closer io.Closer) {
+	if err := closer.Close(); err != nil {
+		ctxlog.Errorf(ctx, "close: %v", err)
+	}
+}
+
 func getRandomUDPConn() (net.PacketConn, error) {
 	var conns []net.PacketConn
 	defer func() {
 		for _, conn := range conns {
 			if conn != nil {
-				conn.Close()
+				safeClose(context.Background(), conn)
 			}
 		}
 	}()
@@ -44,7 +51,7 @@ func getRandomUDPConn() (net.PacketConn, error) {
 		conns = append(conns, conn)
 	}
 
-	idx := int(time.Duration(time.Now().UnixNano()/1000000)) % len(conns)
+	idx := int(time.Now().UnixNano()/1000000) % len(conns)
 	conn := conns[idx]
 	conns[idx] = nil
 	return conn, nil
@@ -56,14 +63,14 @@ func (c *Client) Run(ctx context.Context) error {
 	if err != nil {
 		return errors.Wrap(err, "listen on local")
 	}
-	defer lconn.Close()
+	defer safeClose(ctx, lconn)
 
 	// server
 	sconn, err := getRandomUDPConn()
 	if err != nil {
 		return errors.Wrap(err, "listen for server")
 	}
-	defer sconn.Close()
+	defer safeClose(ctx, sconn)
 	ctxlog.Infof(ctx, "listen on %v for server", sconn.LocalAddr())
 
 	// server addr
