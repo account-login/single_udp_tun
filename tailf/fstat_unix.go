@@ -12,6 +12,7 @@ func Fstat(fd uintptr, stat *StatResult) error {
 	}
 
 	stat.Size = r.Size
+	stat.Dev = r.Dev
 	stat.Inode = r.Ino
 	return nil
 }

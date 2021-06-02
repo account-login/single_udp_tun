@@ -14,6 +14,7 @@ func Fstat(fd uintptr, stat *StatResult) error {
 	}
 
 	stat.Size = int64((uint64(r.FileSizeHigh) << 32) | uint64(r.FileSizeLow))
+	stat.Dev = uint64(r.VolumeSerialNumber)
 	stat.Inode = (uint64(r.FileIndexHigh) << 32) | uint64(r.FileIndexLow)
 	return nil
 }

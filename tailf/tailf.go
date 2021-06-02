@@ -61,6 +61,7 @@ func (self *TailF) Run() {
 	var mu sync.Mutex
 	var fp *os.File // protected by mu
 	var inode uint64
+	var dev uint64
 	var suppressLog bool
 	var stat StatResult
 
@@ -102,8 +103,8 @@ func (self *TailF) Run() {
 				ctxlog.Errorf(self.Ctx, "[tailf] error get inode [path:%v]: %v", self.Path, err)
 				goto LCleanupOpen
 			}
-			inode = stat.Inode
-			ctxlog.Debugf(self.Ctx, "[tailf] opened [path:%v][fd:%v][ino:%v]", self.Path, cfp.Fd(), inode)
+			dev, inode = stat.Dev, stat.Inode
+			ctxlog.Debugf(self.Ctx, "[tailf] opened [path:%v][fd:%v][ino:%v:%v]", self.Path, cfp.Fd(), dev, inode)
 
 			// ok, start reading file
 			mu.Lock()
@@ -132,7 +133,6 @@ func (self *TailF) Run() {
 			}
 		} else {
 			// monitor the fp
-			var minode uint64
 			mfp, err := os.Open(self.Path)
 			if err != nil {
 				if !suppressLog {
@@ -148,11 +148,10 @@ func (self *TailF) Run() {
 				ctxlog.Errorf(self.Ctx, "[tailf] error get inode [path:%v]: %v", self.Path, err)
 				goto LCleanupMon
 			}
-			minode = stat.Inode
-			if inode != minode {
+			if dev != stat.Dev || inode != stat.Inode {
 				ctxlog.Infof(
-					self.Ctx, "[tailf] [path:%v] inode changed [from:%v] to [to:%v]",
-					self.Path, inode, minode,
+					self.Ctx, "[tailf] [path:%v] inode changed [from:%v:%v] to [to:%v:%v]",
+					self.Path, dev, inode, stat.Dev, stat.Inode,
 				)
 				// new file at path
 				mu.Lock()
