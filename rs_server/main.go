@@ -30,6 +30,8 @@ type Server struct {
 	Debug   bool
 	// obfs
 	Obfs bool
+	// loss_probe
+	ProbePath string
 }
 
 func safeClose(ctx context.Context, closer io.Closer) {
@@ -68,7 +70,15 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// obfs
 	obfs := single_udp_tun.Obfs2{Rand: randgen}
-	obfsBuf := make([]byte, 128 * 1024)
+	obfsBuf := make([]byte, 128*1024)
+
+	// loss_probe
+	mon := single_udp_tun.LossMon{
+		Path: s.ProbePath,
+	}
+	if s.ProbePath != "" {
+		go mon.Run(ctx)
+	}
 
 	// target to client
 	go func() {
@@ -107,12 +117,34 @@ func (s *Server) Run(ctx context.Context) error {
 			Debug:  s.Debug,
 		}
 		rsSender.SetGroupId(randgen.Uint32()) // hack to reduce group id collision after reboot
+
+		updateLoss := func() {
+			if s.ProbePath == "" {
+				return
+			}
+			caddr := (*net.UDPAddr)(atomic.LoadPointer(&pcaddr))
+			if caddr == nil {
+				return
+			}
+			lossp, ok := mon.Get(caddr.IP)
+			if !ok {
+				return
+			}
+			rsSender.Loss = float64(lossp) / 100
+			//ctxlog.Debugf(ctx, "updated loss: %v", rsSender.Loss)
+		}
+
 		nextFlushTs := time.Now().Add(time.Duration(s.FlushMs) * time.Millisecond)
 		buf := make([]byte, 128*1024)
 		for {
 			// read from target
 			_ = tconn.SetReadDeadline(nextFlushTs)
 			n, addr, err := tconn.ReadFrom(buf[4:]) // reserve 4 bytes of length prefix
+
+			// update loss before potentially inovoking rsSender
+			updateLoss()
+
+			// check timeout
 			if err != nil {
 				if !os.IsTimeout(err) {
 					ctxlog.Errorf(ctx, "read target: %v", err)
@@ -223,6 +255,7 @@ func main() {
 	flag.IntVar(&s.FlushMs, "flush-ms", 20, "interval for flush RSSender (milliseconds)")
 	flag.BoolVar(&s.Debug, "debug", false, "debug log")
 	flag.BoolVar(&s.Obfs, "obfs", false, "enable obfuscation")
+	flag.StringVar(&s.ProbePath, "probe-path", "", "path to loss_probe output")
 	flag.StringVar(&debugServer, "debug-server", "", "start a debug server at this address")
 	flag.Parse()
 

@@ -18,13 +18,14 @@ import (
 )
 
 type Client struct {
-	Local   string
-	Server  string
-	Loss    float64
-	FlushMs int
-	Debug   bool
-	SimLoss float64
-	Obfs    bool
+	Local     string
+	Server    string
+	Loss      float64
+	FlushMs   int
+	Debug     bool
+	SimLoss   float64
+	Obfs      bool
+	ProbePath string
 }
 
 func safeClose(ctx context.Context, closer io.Closer) {
@@ -90,6 +91,14 @@ func (c *Client) Run(ctx context.Context) error {
 	obfs := single_udp_tun.Obfs2{Rand: randgen}
 	obfsBuf := make([]byte, 128*1024)
 
+	// loss_probe
+	mon := single_udp_tun.LossMon{
+		Path: c.ProbePath,
+	}
+	if c.ProbePath != "" {
+		go mon.Run(ctx)
+	}
+
 	// local to server
 	go func() {
 		ctx := ctxlog.Push(ctx, "[l2s]")
@@ -127,12 +136,33 @@ func (c *Client) Run(ctx context.Context) error {
 			Debug:  c.Debug,
 		}
 		rsSender.SetGroupId(randgen.Uint32()) // hack to reduce group id collision after reboot
+
+		updateLoss := func() {
+			if c.ProbePath == "" {
+				return
+			}
+			caddr := (*net.UDPAddr)(atomic.LoadPointer(&pcaddr))
+			if caddr == nil {
+				return
+			}
+			lossp, ok := mon.Get(caddr.IP)
+			if !ok {
+				return
+			}
+			rsSender.Loss = float64(lossp) / 100
+			//ctxlog.Debugf(ctx, "updated loss: %v", rsSender.Loss)
+		}
+
 		nextFlushTs := time.Now().Add(time.Duration(c.FlushMs) * time.Millisecond)
 		buf := make([]byte, 128*1024)
 		for {
 			// read from local
 			_ = lconn.SetReadDeadline(nextFlushTs)
 			n, addr, err := lconn.ReadFrom(buf[4:]) // reserve 4 bytes of length prefix
+
+			// update loss before potentially inovoking rsSender
+			updateLoss()
+
 			if err != nil {
 				if !os.IsTimeout(err) {
 					ctxlog.Errorf(ctx, "read local: %v", err)
@@ -233,7 +263,7 @@ func (c *Client) Run(ctx context.Context) error {
 	return nil // unreachable
 }
 
-// TODO: adjust loss rate at runtime
+// TODO: merge with rs_server
 // TODO: export rs stats
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
@@ -248,6 +278,7 @@ func main() {
 	flag.BoolVar(&c.Debug, "debug", false, "debug log")
 	flag.Float64Var(&c.SimLoss, "simloss", 0, "simulate sending packet loss")
 	flag.BoolVar(&c.Obfs, "obfs", false, "enable obfuscation")
+	flag.StringVar(&c.ProbePath, "probe-path", "", "path to loss_probe output")
 	flag.StringVar(&debugServer, "debug-server", "", "start a debug server at this address")
 	flag.Parse()
 
