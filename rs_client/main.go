@@ -141,11 +141,7 @@ func (c *Client) Run(ctx context.Context) error {
 			if c.ProbePath == "" {
 				return
 			}
-			caddr := (*net.UDPAddr)(atomic.LoadPointer(&pcaddr))
-			if caddr == nil {
-				return
-			}
-			lossp, ok := mon.Get(caddr.IP)
+			lossp, ok := mon.Get(saddr.IP)
 			if !ok {
 				return
 			}
@@ -263,7 +259,6 @@ func (c *Client) Run(ctx context.Context) error {
 	return nil // unreachable
 }
 
-// TODO: merge with rs_server
 // TODO: export rs stats
 func main() {
 	log.SetFlags(log.Flags() | log.Lmicroseconds)
