@@ -22,6 +22,7 @@ func assert(cond bool) {
 func main() {
 	pNum := flag.Int("num", 0, "expected number of packets")
 	pListen := flag.String("listen", "", "listen at this address")
+	pClient := flag.String("client", "", "connect to client")
 	flag.Parse()
 
 	rand.Seed(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(pNum))))
@@ -32,6 +33,13 @@ func main() {
 	assert(err == nil)
 	conn, err := net.ListenUDP("udp", udpAddr)
 	assert(err == nil)
+
+	if *pClient != "" {
+		caddr, err := net.ResolveUDPAddr("udp", *pClient)
+		assert(err == nil)
+		_, err = conn.WriteTo(make([]byte, 1), caddr)
+		assert(err == nil)
+	}
 
 	bitmap := make([]uint64, num/64+1)
 	buf := make([]byte, 64*1024)

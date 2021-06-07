@@ -22,6 +22,7 @@ func main() {
 	pLoss := flag.Float64("loss", 0, "rate of loss")
 	pDurtaion := flag.Int("duration", 0, "test duration in seconds")
 	pServer := flag.String("server", "", "ip:port of server")
+	pListen := flag.String("listen", "", "wait for connection from server")
 	flag.Parse()
 
 	size := *pSize
@@ -40,11 +41,25 @@ func main() {
 	if duration <= 0 {
 		duration = 5
 	}
+	assert((*pServer == "") != (*pListen == "")) // one of
 
 	rand.Seed(time.Now().UnixNano() ^ int64(uintptr(unsafe.Pointer(pSize))))
 
-	conn, err := net.Dial("udp", *pServer)
-	assert(err == nil)
+	var conn net.PacketConn
+	var raddr net.Addr
+	var err error
+	if *pListen != "" {
+		conn, err = net.ListenPacket("udp", *pListen)
+		assert(err == nil)
+		_, raddr, err = conn.ReadFrom(make([]byte, 1))
+		assert(err == nil)
+		fmt.Println("server:", raddr)
+	} else {
+		raddr, err = net.ResolveUDPAddr("udp", *pServer)
+		assert(err == nil)
+		conn, err = net.ListenPacket("udp", ":0")
+		assert(err == nil)
+	}
 
 	pkt := make([]byte, size)
 
@@ -61,7 +76,7 @@ func main() {
 
 		if rand.Float64() > loss {
 			binary.LittleEndian.PutUint64(pkt, uint64(np))
-			_, err := conn.Write(pkt)
+			_, err := conn.WriteTo(pkt, raddr)
 			assert(err == nil)
 			nDrop--
 		}
